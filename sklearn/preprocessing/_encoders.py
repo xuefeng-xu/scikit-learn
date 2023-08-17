@@ -337,23 +337,21 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
         missing_indices : dict
             Dict mapping from feature_idx to category index with a missing value.
         """
-        # Remove missing value from counts, so it is not considered as infrequent
-        if missing_indices:
-            category_counts_ = []
-            for feature_idx, count in enumerate(category_counts):
-                if feature_idx in missing_indices:
-                    category_counts_.append(
-                        np.delete(count, missing_indices[feature_idx])
-                    )
-                else:
-                    category_counts_.append(count)
-        else:
-            category_counts_ = category_counts
-
-        self._infrequent_indices = [
-            self._identify_infrequent(category_count, n_samples, col_idx)
-            for col_idx, category_count in enumerate(category_counts_)
-        ]
+        self._infrequent_indices = []
+        for col_idx, category_count in enumerate(category_counts):
+            infreq_idx = self._identify_infrequent(category_count,
+                                                   n_samples,
+                                                   col_idx)
+            
+            # Remove missing value from counts,
+            # so it is not considered as infrequent
+            if (missing_indices and
+                infreq_idx is not None and
+                col_idx in missing_indices):
+                infreq_idx = np.delete(infreq_idx,
+                                       infreq_idx == missing_indices[col_idx])
+            
+            self._infrequent_indices.append(infreq_idx)
 
         # compute mapping from default mapping to infrequent mapping
         self._default_to_infrequent_mappings = []
