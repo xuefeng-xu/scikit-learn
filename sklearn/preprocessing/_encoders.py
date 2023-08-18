@@ -175,7 +175,6 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
         handle_unknown="error",
         force_all_finite=True,
         warn_on_unknown=False,
-        ignore_category_indices=None,
     ):
         X_list, n_samples, n_features = self._check_X(
             X, force_all_finite=force_all_finite
@@ -234,7 +233,7 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
                 UserWarning,
             )
 
-        self._map_infrequent_categories(X_int, X_mask, ignore_category_indices)
+        self._map_infrequent_categories(X_int, X_mask)
         return X_int, X_mask
 
     @property
@@ -343,8 +342,7 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
                                                    n_samples,
                                                    col_idx)
             
-            # Remove missing value from counts,
-            # so it is not considered as infrequent
+            # Remove missing index, so it is not considered as infrequent
             if (missing_indices and
                 infreq_idx is not None and
                 col_idx in missing_indices):
@@ -364,26 +362,31 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
                 continue
 
             n_cats = len(cats)
-            if feature_idx in missing_indices:
-                # Missing index was removed from this category when computing
-                # infrequent indices, thus we need to decrease the number of
-                # total categories when considering the infrequent mapping.
-                n_cats -= 1
-
             # infrequent indices exist
             mapping = np.empty(n_cats, dtype=np.int64)
             n_infrequent_cats = infreq_idx.size
+            n_frequent_cats = n_cats - n_infrequent_cats
+            frequent_indices = np.setdiff1d(np.arange(n_cats), infreq_idx)
+
+            if feature_idx in missing_indices:
+                # Missing index was removed when computing infrequent indices,
+                # thus we need to decrease the number of frequent categories
+                # and remove it from frequent indices.
+                n_frequent_cats -= 1
+                missing_idx = missing_indices[feature_idx]
+                frequent_indices = np.delete(frequent_indices,
+                                             frequent_indices == missing_idx)
+                # set the mapping of missing values
+                mapping[missing_idx] = n_frequent_cats + 1
 
             # infrequent categories are mapped to the last element.
-            n_frequent_cats = n_cats - n_infrequent_cats
             mapping[infreq_idx] = n_frequent_cats
 
-            frequent_indices = np.setdiff1d(np.arange(n_cats), infreq_idx)
             mapping[frequent_indices] = np.arange(n_frequent_cats)
 
             self._default_to_infrequent_mappings.append(mapping)
 
-    def _map_infrequent_categories(self, X_int, X_mask, ignore_category_indices):
+    def _map_infrequent_categories(self, X_int, X_mask):
         """Map infrequent categories to integer representing the infrequent category.
 
         This modifies X_int in-place. Values that were invalid based on `X_mask`
@@ -397,16 +400,9 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
 
         X_mask: ndarray of shape (n_samples, n_features)
             Bool mask for valid values in `X_int`.
-
-        ignore_category_indices : dict
-            Dictionary mapping from feature_idx to category index to ignore.
-            Ignored indexes will not be grouped and the original ordinal encoding
-            will remain.
         """
         if not self._infrequent_enabled:
             return
-
-        ignore_category_indices = ignore_category_indices or {}
 
         for col_idx in range(X_int.shape[1]):
             infrequent_idx = self._infrequent_indices[col_idx]
@@ -426,14 +422,7 @@ class _BaseEncoder(TransformerMixin, BaseEstimator):
         for i, mapping in enumerate(self._default_to_infrequent_mappings):
             if mapping is None:
                 continue
-
-            if i in ignore_category_indices:
-                # Update rows that are **not** ignored
-                rows_to_update = X_int[:, i] != ignore_category_indices[i]
-            else:
-                rows_to_update = slice(None)
-
-            X_int[rows_to_update, i] = np.take(mapping, X_int[rows_to_update, i])
+            X_int[:, i] = np.take(mapping, X_int[:, i])
 
     def _more_tags(self):
         return {"X_types": ["2darray", "categorical"], "allow_nan": True}
@@ -1577,11 +1566,14 @@ class OrdinalEncoder(OneToOneFeatureMixin, _BaseEncoder):
             X,
             handle_unknown=self.handle_unknown,
             force_all_finite="allow-nan",
-            ignore_category_indices=self._missing_indices,
         )
         X_trans = X_int.astype(self.dtype, copy=False)
 
         for cat_idx, missing_idx in self._missing_indices.items():
+            if self._infrequent_enabled:
+                mapping = self._default_to_infrequent_mappings[cat_idx]
+                if mapping is not None:
+                    missing_idx = mapping[missing_idx]
             X_missing_mask = X_int[:, cat_idx] == missing_idx
             X_trans[X_missing_mask, cat_idx] = self.encoded_missing_value
 
@@ -1633,6 +1625,7 @@ class OrdinalEncoder(OneToOneFeatureMixin, _BaseEncoder):
             if i in self._missing_indices:
                 X_i_mask = _get_mask(labels, self.encoded_missing_value)
                 labels[X_i_mask] = self._missing_indices[i]
+                X_tr[X_i_mask, i] = self.encoded_missing_value
 
             rows_to_update = slice(None)
             categories = self.categories_[i]
@@ -1640,13 +1633,19 @@ class OrdinalEncoder(OneToOneFeatureMixin, _BaseEncoder):
             if infrequent_indices is not None and infrequent_indices[i] is not None:
                 # Compute mask for frequent categories
                 infrequent_encoding_value = len(categories) - len(infrequent_indices[i])
+                if i in self._missing_indices:
+                    infrequent_encoding_value -= 1
                 infrequent_masks[i] = labels == infrequent_encoding_value
                 rows_to_update = ~infrequent_masks[i]
+                if i in self._missing_indices:
+                    rows_to_update[self._missing_indices[i]] = False
 
                 # Remap categories to be only frequent categories. The infrequent
                 # categories will be mapped to "infrequent_sklearn" later
                 frequent_categories_mask = np.ones_like(categories, dtype=bool)
                 frequent_categories_mask[infrequent_indices[i]] = False
+                if i in self._missing_indices:
+                    frequent_categories_mask[self._missing_indices[i]] = False
                 categories = categories[frequent_categories_mask]
 
             if self.handle_unknown == "use_encoded_value":
