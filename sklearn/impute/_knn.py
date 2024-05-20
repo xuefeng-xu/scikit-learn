@@ -156,7 +156,7 @@ class KNNImputer(_BaseImputer):
         self.metric = metric
         self.copy = copy
 
-    def _calc_impute(self, dist_pot_donors, n_neighbors, fit_X_col, mask_fit_X_col):
+    def _calc_impute(self, dist_pot_donors, n_neighbors, fit_X_col):
         """Helper function to impute a single column.
 
         Parameters
@@ -171,9 +171,6 @@ class KNNImputer(_BaseImputer):
 
         fit_X_col : ndarray of shape (n_potential_donors,)
             Column of potential donors from training set.
-
-        mask_fit_X_col : ndarray of shape (n_potential_donors,)
-            Missing mask for fit_X_col.
 
         Returns
         -------
@@ -198,10 +195,7 @@ class KNNImputer(_BaseImputer):
 
         # Retrieve donor values and calculate kNN average
         donors = fit_X_col.take(donors_idx)
-        donors_mask = mask_fit_X_col.take(donors_idx)
-        donors = np.ma.array(donors, mask=donors_mask)
-
-        return np.ma.average(donors, axis=1, weights=weight_matrix).data
+        return np.average(donors, axis=1, weights=weight_matrix)
 
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(self, X, y=None):
@@ -350,7 +344,6 @@ class KNNImputer(_BaseImputer):
                     dist_subset,
                     n_neighbors,
                     self._fit_X[potential_donors_idx, col],
-                    mask_fit_X[potential_donors_idx, col],
                 )
                 X[receivers_idx, col] = value
 
